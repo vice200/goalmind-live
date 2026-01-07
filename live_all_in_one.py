@@ -1363,77 +1363,137 @@ def _best_update(best: Dict[str, float], key: str, odd: Optional[float]) -> None
         best[key] = float(odd)
 
 
+def _handicap_to_float(v: Any) -> Optional[float]:
+    if v is None:
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    if isinstance(v, str):
+        s = v.strip().replace(",", ".")
+        if not s:
+            return None
+        try:
+            return float(s)
+        except Exception:
+            return None
+    return None
+
+
+def _extract_line_from_label(label_norm: str) -> Optional[float]:
+    # tries to find something like 2.5 in "Over 2.5", "Goals/Over  0.5", etc.
+    m = re.search(r"(\d+(?:\.\d+)?)", label_norm)
+    if not m:
+        return None
+    try:
+        return float(m.group(1))
+    except Exception:
+        return None
+
+
 def parse_best_odds_for_fixture(odds_item: Dict[str, Any], home: str, away: str) -> Dict[str, Any]:
     """
-    Returns dict with best odds for:
-      - goal10_yes/no
-      - next10_home/away/nogoal  (next goal within ~10 minutes market if offered)
-      - btts_yes/no
-      - over25/under25 (full-time total goals)
+    API-Football /odds/live format:
+      item["odds"] = [ { "name": "...", "values": [ {value, odd, handicap, suspended}, ... ] }, ... ]
+
+    Returns best odds for:
+      - odds_goal10_yes/no       (Next 10 Minutes Total -> Goals/Over 0.5 / Goals/Under 0.5)
+      - odds_next10_home/away/nogoal  (Next goal market proxy: Next Goal / Next Team to Score / 1st goal)
+      - odds_btts_yes/no         (Both Teams to Score)
+      - odds_over25/under25      (Over/Under Line OR Match Goals with handicap 2.5)
     """
     best: Dict[str, float] = {}
+
     home_n = _norm_txt(home)
     away_n = _norm_txt(away)
 
-    bookmakers = odds_item.get("bookmakers") or []
-    for bm in bookmakers:
-        bets = bm.get("bets") or []
-        for bet in bets:
-            name = _norm_txt(str(bet.get("name") or ""))
-            values = bet.get("values") or []
+    markets = odds_item.get("odds") or []
 
-            # Goal in next 10 minutes
-            is_goal10 = ("next 10" in name or "10 minutes" in name or "10 min" in name) and ("goal" in name or "goals" in name)
-            # BTTS
-            is_btts = ("both teams" in name and ("score" in name or "to score" in name)) or (name in {"btts", "both teams to score"})
-            # Next goal / next team to score (often without time bound)
-            is_next_goal = ("next goal" in name) or ("next team" in name and "score" in name) or (name == "next goal")
+    # --- fallback: old structure (just in case some endpoints return bookmakers/bets) ---
+    if not markets and (odds_item.get("bookmakers") or []):
+        # keep your old logic if you want, but most likely not needed for /odds/live
+        markets = []
 
-            # Over/Under (total goals)
-            is_ou = ("over/under" in name) or ("total goals" in name) or ("goals over" in name)
+    for m in markets:
+        mname_raw = str(m.get("name") or "")
+        mname = _norm_txt(mname_raw)
 
-            for v in values:
-                label = _norm_txt(str(v.get("value") or ""))
-                odd = _odd_to_float(v.get("odd") if "odd" in v else v.get("odd") if "odd" in v else v.get("odd"))
+        vals = m.get("values") or []
+        for v in vals:
+            # skip suspended
+            if v.get("suspended") is True:
+                continue
 
-                if odd is None:
-                    odd = _odd_to_float(v.get("odd") if "odd" in v else v.get("odd"))
-                if odd is None:
-                    odd = _odd_to_float(v.get("odd") if "odd" in v else v.get("odd"))
-                if odd is None:
-                    odd = _odd_to_float(v.get("odd") if "odd" in v else v.get("odd"))
-                # API-Football uses "odd" key, sometimes "odd" nested; keep defensive
-                if odd is None:
-                    odd = _odd_to_float(v.get("odd") or v.get("odds") or v.get("Odd") or v.get("ODD"))
+            label_raw = str(v.get("value") or "")
+            label = _norm_txt(label_raw)
 
-                if is_goal10:
-                    if label in {"yes", "y", "1"}:
+            odd = _odd_to_float(v.get("odd") or v.get("odds") or v.get("Odd") or v.get("ODD"))
+            if odd is None or odd <= 1.0:
+                continue
+
+            hcap = _handicap_to_float(v.get("handicap"))
+
+            # =========================
+            # 1) GOAL IN NEXT 10 MIN (YES/NO)
+            # market: "Next 10 Minutes Total"
+            # values: "Goals/Over  0.5" / "Goals/Under  0.5"
+            # =========================
+            if "next 10" in mname and "minute" in mname and "total" in mname:
+                # only goals (ignore corners/cards inside this same market)
+                if "goals" in label and "0.5" in label:
+                    if "over" in label:
                         _best_update(best, "odds_goal10_yes", odd)
-                    elif label in {"no", "n", "0"}:
+                    elif "under" in label:
                         _best_update(best, "odds_goal10_no", odd)
 
-                if is_btts:
-                    if label in {"yes", "y"}:
-                        _best_update(best, "odds_btts_yes", odd)
-                    elif label in {"no", "n"}:
-                        _best_update(best, "odds_btts_no", odd)
+            # =========================
+            # 2) BTTS
+            # market: "Both Teams to Score"
+            # values: Yes / No
+            # =========================
+            if "both teams" in mname and "score" in mname:
+                if label in {"yes", "y"}:
+                    _best_update(best, "odds_btts_yes", odd)
+                elif label in {"no", "n"}:
+                    _best_update(best, "odds_btts_no", odd)
 
-                if is_next_goal:
-                    # map to home/away/nogoal by label
-                    if label in {"home", "1"} or (home_n and home_n in label):
-                        _best_update(best, "odds_next10_home", odd)
-                    elif label in {"away", "2"} or (away_n and away_n in label):
-                        _best_update(best, "odds_next10_away", odd)
-                    elif "no goal" in label or label in {"none", "no", "draw"}:
-                        _best_update(best, "odds_next10_nogoal", odd)
+            # =========================
+            # 3) OVER/UNDER 2.5 (FT totals)
+            # markets you showed: "Over/Under Line" and "Match Goals"
+            # values: Over/Under with handicap=2.5 (or label contains 2.5)
+            # =========================
+            is_ou_market = (
+                ("over/under" in mname)
+                or ("match goals" in mname)
+                or ("total goals" in mname)
+                or ("over under" in mname)
+            )
+            if is_ou_market:
+                line = hcap if hcap is not None else _extract_line_from_label(label)
+                if line is not None and abs(line - 2.5) < 1e-6:
+                    if "over" in label:
+                        _best_update(best, "odds_over25", odd)
+                    elif "under" in label:
+                        _best_update(best, "odds_under25", odd)
 
-                if is_ou:
-                    # look specifically for 2.5 line (most common)
-                    if "2.5" in label:
-                        if "over" in label:
-                            _best_update(best, "odds_over25", odd)
-                        elif "under" in label:
-                            _best_update(best, "odds_under25", odd)
+            # =========================
+            # 4) NEXT GOAL (proxy for your "pick next10" odds columns)
+            # markets: "Next Goal", "Next Team to Score", "Which team will score the 1st goal?"
+            # values: Home/Away/No Goal (or team names)
+            # =========================
+            is_next_goal_market = (
+                ("next goal" in mname)
+                or ("next team" in mname and "score" in mname)
+                or ("which team will score" in mname and "1st goal" in mname)
+                or (mname == "which team will score the 1st goal?")
+            )
+            if is_next_goal_market:
+                # match by generic labels
+                if label in {"home", "1"} or (home_n and home_n in label):
+                    _best_update(best, "odds_next10_home", odd)
+                elif label in {"away", "2"} or (away_n and away_n in label):
+                    _best_update(best, "odds_next10_away", odd)
+                elif "no goal" in label or label in {"none", "no", "draw"}:
+                    _best_update(best, "odds_next10_nogoal", odd)
 
     return best
 
