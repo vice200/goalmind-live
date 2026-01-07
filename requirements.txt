@@ -1,0 +1,10 @@
+streamlit
+pandas
+numpy
+openpyxl
+requests
+scikit-learn
+joblib
+beautifulsoup4
+lxml
+python-dateutil
