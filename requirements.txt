@@ -1,10 +1,6 @@
 streamlit
 pandas
-numpy
-openpyxl
 requests
-scikit-learn
-joblib
-beautifulsoup4
-lxml
-python-dateutil
+stripe
+streamlit-autorefresh
+tomli; python_version < '3.11'
