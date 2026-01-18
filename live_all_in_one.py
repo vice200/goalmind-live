@@ -1,4 +1,4 @@
-# live_all_in_one_plus.py
+# live_all_in_one.py
 from __future__ import annotations
 
 import os
@@ -46,8 +46,8 @@ SQLITE_PATH = "live_store.sqlite"
 SCHEMA_VERSION = 20
 
 # How often poller calls real API
-POLL_SECONDS = 300  # 5 minutes
-POLL_SECONDS = max(int(POLL_SECONDS), 300)  # hard floor: never below 300s (API friendly)
+POLL_SECONDS = 60  # 5 minutes
+POLL_SECONDS = max(int(POLL_SECONDS), 60)  # hard floor: never below 300s (API friendly)
 
 # How often UI refreshes (no API calls, just redraw)
 UI_REFRESH_MS = 30 * 1000  # 30 sec
